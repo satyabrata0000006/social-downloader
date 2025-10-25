@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>🎬 Social Media Downloader</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    /* ছোট ঘূর্ণায়মান লোডার */
+    .spinner {
+      border: 3px solid #f3f3f3;
+      border-top: 3px solid #2563eb;
+      border-radius: 50%;
+      width: 16px;
+      height: 16px;
+      animation: spin 0.8s linear infinite;
+      display: inline-block;
+      vertical-align: middle;
+      margin-right: 6px;
+    }
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+  </style>
+</head>
+
+<body class="bg-gradient-to-br from-gray-100 to-gray-200 dark:from-gray-900 dark:to-gray-800 
+             text-gray-800 dark:text-gray-100 min-h-screen flex flex-col items-center p-4">
+
+  <div class="w-full max-w-xl bg-white dark:bg-gray-900 shadow-lg rounded-2xl p-6">
+    <h1 class="text-2xl font-bold text-center mb-4">🎬 Social Media Downloader</h1>
+
+    <input id="urlInput" 
+           class="w-full border rounded-lg p-2 mb-3 
+                  text-gray-800 dark:text-gray-100 
+                  bg-white dark:bg-gray-800 
+                  placeholder-gray-400"
+           placeholder="Paste video/photo URL (YouTube, Instagram, FB, Threads...)" />
+
+    <div class="flex gap-2 mb-3">
+      <button id="getInfoBtn" 
+              class="flex-1 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg transition flex justify-center items-center gap-2">
+        Get Info
+      </button>
+      <button id="autoCookieBtn" 
+              class="bg-gray-200 dark:bg-gray-700 hover:bg-gray-600 dark:hover:bg-gray-600 text-sm px-3 py-2 rounded-lg transition">
+        Auto Cookies
+      </button>
+    </div>
+
+    <div id="infoSection" class="hidden">
+      <img id="thumb" class="w-full rounded-lg mb-3 shadow-sm" />
+      <h2 id="videoTitle" class="text-lg font-semibold mb-2"></h2>
+
+      <label class="block text-sm mb-1 font-medium">Select Format:</label>
+      <select id="formatSelect" 
+              class="w-full border p-2 rounded-lg mb-4
+                     bg-white text-gray-800 
+                     dark:bg-gray-800 dark:text-gray-100 
+                     focus:outline-none focus:ring-2 focus:ring-blue-500">
+      </select>
+
+      <button id="downloadBtn" 
+              class="w-full bg-green-600 hover:bg-green-700 text-white py-2 rounded-lg transition flex justify-center items-center gap-2">
+        Download
+      </button>
+
+      <button id="clearBtn" 
+              class="w-full bg-gray-300 hover:bg-gray-400 dark:bg-gray-700 dark:hover:bg-gray-600 
+                     text-gray-900 dark:text-gray-100 py-2 rounded-lg mt-2 transition">
+        Clear
+      </button>
+    </div>
+
+    <div id="progressBar" 
+         class="w-full bg-gray-300 dark:bg-gray-700 rounded-full h-4 mt-4 hidden overflow-hidden">
+      <div id="progressInner" 
+           class="bg-blue-600 h-4 rounded-full transition-all duration-300" 
+           style="width: 0%">
+      </div>
+    </div>
+
+    <div id="statusText" class="text-center mt-2 text-sm"></div>
+  </div>
+
+  <footer class="text-xs text-gray-500 dark:text-gray-400 mt-6">
+    Built with ❤️ by Satyabrata | Multi-Site Support | Flask + yt-dlp
+  </footer>
+
+  <script src="/static/script.js"></script>
+</body>
+</html>
