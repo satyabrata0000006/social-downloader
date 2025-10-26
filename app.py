@@ -12,6 +12,9 @@ from pathlib import Path
 from flask import Flask, request, jsonify, send_file, render_template, send_from_directory
 import yt_dlp
 import html
+import http.cookiejar as cookiejar
+import json
+import base64
 
 # Optional browser cookie support
 try:
@@ -34,12 +37,14 @@ TASK_LOCK = threading.Lock()
 def safe_basename(path: str) -> str:
     return Path(path).name
 
+
 def add_task_message(task_id, text):
     t = TASKS.get(task_id)
     if t is None:
         return
     msgs = t.setdefault("messages", [])
     msgs.append({"ts": int(time.time()), "text": text})
+
 
 def run_subprocess(cmd, env=None, timeout=None):
     try:
@@ -53,6 +58,7 @@ def run_subprocess(cmd, env=None, timeout=None):
         return 124, "", f"timeout: {e}"
     except Exception as e:
         return 1, "", str(e)
+
 
 def find_file_by_info(info):
     try:
@@ -81,9 +87,6 @@ def find_file_by_info(info):
 
 # ---------------- ffprobe / QuickTime compatibility helpers ----------------
 def ffprobe_codecs(path: Path):
-    """
-    Return dict: {"video": "<vcodec>" or None, "audio": "<acodec>" or None}
-    """
     try:
         cmd_v = ["ffprobe", "-v", "error", "-select_streams", "v:0",
                  "-show_entries", "stream=codec_name", "-of", "default=noprint_wrappers=1:nokey=1", str(path)]
@@ -99,29 +102,25 @@ def ffprobe_codecs(path: Path):
     except Exception:
         return None
 
+
 def is_quicktime_compatible(codecs: dict):
-    """
-    Heuristic: QuickTime-friendly if H.264/AVC (avc1/h264) + AAC/mp3.
-    """
     if not codecs:
         return False
     v = (codecs.get("video") or "").lower()
     a = (codecs.get("audio") or "").lower()
 
     if not v:
-        # audio-only
         if "aac" in a or "mp3" in a or "mp4a" in a:
             return True
         return False
 
     if ("h264" in v) or ("avc1" in v) or ("avc" in v):
-        if not a:  # video-only h264 is fine
+        if not a:
             return True
         if "aac" in a or "mp3" in a or "mp4a" in a:
             return True
         return False
 
-    # vp8/vp9/av1 typically not QuickTime-friendly
     return False
 
 # ---------------- Container choice + remux/re-encode ----------------
@@ -148,32 +147,24 @@ def choose_best_container(info):
         return "webm"
     return "mp4"
 
+
 def remux_or_encode(task_id, src_path: Path, desired_ext: str, reencode_on_fail=True):
-    """
-    1) Try fast remux (ffmpeg -c copy) to desired_ext
-    2) If remuxed file not QuickTime-compatible (or remux failed), optionally re-encode to H.264 + AAC mp4
-    Returns Path to final file (may be original)
-    """
     try:
         add_task_message(task_id, f"Preparing container: target .{desired_ext}")
         cur_ext = src_path.suffix.lstrip(".").lower()
-        # If already desired extension, still check codecs
         if cur_ext == desired_ext:
             add_task_message(task_id, f"File already .{cur_ext}; checking codecs for compatibility...")
             codecs = ffprobe_codecs(src_path)
             if codecs and is_quicktime_compatible(codecs):
                 add_task_message(task_id, "Already QuickTime-compatible; no action needed.")
                 return src_path
-            # else continue to remux/re-encode
 
-        # Check ffmpeg availability
         rc, out, err = run_subprocess(["ffmpeg", "-version"])
         if rc != 0:
             add_task_message(task_id, "ffmpeg not available; cannot remux/re-encode. Serving original.")
             app.logger.warning("ffmpeg not available: %s", err)
             return src_path
 
-        # Attempt fast remux (copy)
         base = src_path.stem
         outname = DOWNLOAD_DIR / f"{base}.{desired_ext}"
         i = 1
@@ -212,7 +203,6 @@ def remux_or_encode(task_id, src_path: Path, desired_ext: str, reencode_on_fail=
                 return outname
             return src_path
 
-        # Re-encode to H.264 + AAC mp4
         add_task_message(task_id, "Re-encoding to H.264 + AAC (.mp4). This may take long for large files.")
         enc_out = DOWNLOAD_DIR / f"{base}.mp4"
         j = 1
@@ -255,6 +245,160 @@ def remux_or_encode(task_id, src_path: Path, desired_ext: str, reencode_on_fail=
         add_task_message(task_id, f"Remux/encode exception: {e}")
         return src_path
 
+# ---------------- Cookie helpers ----------------
+
+def is_netscape_format(path: str) -> bool:
+    try:
+        with open(path, "r", encoding="utf-8", errors="ignore") as fh:
+            head = "".join([next(fh) for _ in range(5)])
+            if "# Netscape" in head or "\t" in head:
+                return True
+    except StopIteration:
+        pass
+    except Exception:
+        pass
+    return False
+
+
+def json_to_netscape(json_path: str, out_path: str) -> bool:
+    """
+    Convert cookie JSON (common exporter formats) to Netscape cookies.txt lines.
+    Returns True on success.
+    """
+    try:
+        with open(json_path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except Exception:
+        return False
+
+    lst = None
+    if isinstance(data, list):
+        lst = data
+    elif isinstance(data, dict) and "cookies" in data and isinstance(data["cookies"], list):
+        lst = data["cookies"]
+    else:
+        # try to find list value
+        for v in data.values():
+            if isinstance(v, list):
+                lst = v
+                break
+    if not lst:
+        return False
+
+    lines = ["# Netscape HTTP Cookie File"]
+    for c in lst:
+        try:
+            domain = c.get("domain") or c.get("host") or ""
+            path = c.get("path", "/")
+            secure = "TRUE" if str(c.get("secure", False)).lower() in ("true", "1") else "FALSE"
+            exp = c.get("expirationDate") or c.get("expires") or c.get("expiry") or c.get("expire")
+            if exp is None:
+                exp_val = "0"
+            else:
+                try:
+                    exp_val = str(int(float(exp)))
+                except Exception:
+                    exp_val = "0"
+            name = c.get("name", "")
+            value = c.get("value", "")
+            flag = "TRUE" if domain.startswith(".") else "FALSE"
+            lines.append(f"{domain}\t{flag}\t{path}\t{secure}\t{exp_val}\t{name}\t{value}")
+        except Exception:
+            continue
+    try:
+        with open(out_path, "w", encoding="utf-8") as fh:
+            fh.write("\n".join(lines) + "\n")
+        return True
+    except Exception:
+        return False
+
+
+def make_cookiefile_from_env() -> str | None:
+    """
+    Create a temp cookies.txt file from env var YTDLP_COOKIES (raw content),
+    YTDLP_COOKIES_FILE, or base64 var YTDLP_COOKIES_B64.
+    Returns path to cookiefile, or None.
+    Caller should unlink returned path when done.
+    """
+    # 1) explicit file path env
+    file_path = os.environ.get("YTDLP_COOKIES_FILE")
+    if file_path:
+        if os.path.exists(file_path):
+            # validate netscape, if not and looks like json try conversion
+            if is_netscape_format(file_path):
+                return file_path
+            else:
+                # try convert json to netscape into tmp file
+                tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".txt")
+                tmp.close()
+                ok = json_to_netscape(file_path, tmp.name)
+                if ok:
+                    return tmp.name
+                else:
+                    try:
+                        os.unlink(tmp.name)
+                    except Exception:
+                        pass
+                    return None
+
+    # 2) base64 env var - preferred for UI newline issues
+    b64 = os.environ.get("YTDLP_COOKIES_B64")
+    if b64:
+        try:
+            data = base64.b64decode(b64)
+            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".txt")
+            tmp.close()
+            with open(tmp.name, "wb") as fh:
+                fh.write(data)
+            # validate
+            if is_netscape_format(tmp.name):
+                return tmp.name
+            # try json convert
+            conv_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".txt")
+            conv_tmp.close()
+            ok = json_to_netscape(tmp.name, conv_tmp.name)
+            if ok:
+                try:
+                    os.unlink(tmp.name)
+                except Exception:
+                    pass
+                return conv_tmp.name
+            else:
+                # keep original (maybe still valid)
+                return tmp.name
+        except Exception:
+            return None
+
+    # 3) raw env var
+    raw = os.environ.get("YTDLP_COOKIES")
+    if raw:
+        try:
+            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".txt")
+            tmp.close()
+            with open(tmp.name, "w", encoding="utf-8") as fh:
+                fh.write(raw)
+            if is_netscape_format(tmp.name):
+                return tmp.name
+            # try json->netscape
+            conv_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".txt")
+            conv_tmp.close()
+            ok = json_to_netscape(tmp.name, conv_tmp.name)
+            if ok:
+                try:
+                    os.unlink(tmp.name)
+                except Exception:
+                    pass
+                return conv_tmp.name
+            return tmp.name
+        except Exception:
+            try:
+                os.unlink(tmp.name)
+            except Exception:
+                pass
+            return None
+
+    return None
+
 # ---------------- yt-dlp options ----------------
 def prepare_yt_dlp_opts(cookiefile=None, output_template=None, allow_unplayable=False,
                         extra_headers=None, progress_hook=None, format_override=None,
@@ -287,6 +431,10 @@ def prepare_yt_dlp_opts(cookiefile=None, output_template=None, allow_unplayable=
         "postprocessor_args": ["-c", "copy", "-movflags", "faststart", "-threads", "2"],
     }
 
+    proxy = os.environ.get("YTDLP_PROXY") or os.environ.get("HTTP_PROXY") or os.environ.get("HTTPS_PROXY")
+    if proxy:
+        opts["proxy"] = proxy
+
     if audio_convert:
         opts["postprocessors"] = [{
             "key": "FFmpegExtractAudio",
@@ -306,6 +454,7 @@ def prepare_yt_dlp_opts(cookiefile=None, output_template=None, allow_unplayable=
 
     return opts
 
+
 def run_ydl_extract(url, opts):
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
@@ -314,22 +463,39 @@ def run_ydl_extract(url, opts):
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
+
 def yt_extract_info(url, cookiefile=None, try_browser_cookies=False):
     attempts = []
+    # 0) try with no cookies
     opts = prepare_yt_dlp_opts()
     r1 = run_ydl_extract(url, opts)
     attempts.append(("no_cookies", r1))
     if r1.get("ok"):
         return {"info": r1["info"], "attempts": attempts}
+
+    created_env_cookie = None
+    # 1) try uploaded cookiefile if provided
     if cookiefile:
         opts = prepare_yt_dlp_opts(cookiefile=cookiefile)
         r2 = run_ydl_extract(url, opts)
         attempts.append(("user_cookiefile", r2))
         if r2.get("ok"):
             return {"info": r2["info"], "attempts": attempts}
+
+    # 2) try env-provided cookies
+    env_cookie_path = make_cookiefile_from_env()
+    if env_cookie_path:
+        created_env_cookie = env_cookie_path
+        opts = prepare_yt_dlp_opts(cookiefile=env_cookie_path)
+        r_env = run_ydl_extract(url, opts)
+        attempts.append(("env_cookiefile", r_env))
+        if r_env.get("ok"):
+            return {"info": r_env["info"], "attempts": attempts}
+    # 3) try browser cookies if allowed
     if try_browser_cookies and BROWSER_COOKIE3_AVAILABLE:
         tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".txt")
         tmp.close()
+        ok = False
         try:
             ok = export_browser_cookies_for_domain("youtube.com", tmp.name)
         except Exception:
@@ -344,12 +510,29 @@ def yt_extract_info(url, cookiefile=None, try_browser_cookies=False):
                 pass
             if r3.get("ok"):
                 return {"info": r3["info"], "attempts": attempts}
-    opts = prepare_yt_dlp_opts(cookiefile=cookiefile, allow_unplayable=True)
+
+    # 4) last: allow unplayable fallback
+    env_cookie_for_cleanup = created_env_cookie
+    opts = prepare_yt_dlp_opts(cookiefile=created_env_cookie, allow_unplayable=True)
     r4 = run_ydl_extract(url, opts)
     attempts.append(("allow_unplayable", r4))
     if r4.get("ok"):
+        if created_env_cookie:
+            try:
+                os.unlink(created_env_cookie)
+            except Exception:
+                pass
         return {"info": r4["info"], "attempts": attempts}
+
+    # cleanup env cookiefile if created
+    if created_env_cookie:
+        try:
+            os.unlink(created_env_cookie)
+        except Exception:
+            pass
+
     return {"error": r4.get("error") or r1.get("error"), "attempts": attempts}
+
 
 def get_request_param(key, default=None):
     if key in request.form:
@@ -389,6 +572,7 @@ def info_route():
         return jsonify({"ok": False, "error": "url parameter missing"}), 400
 
     cookiefile_path = None
+    created_env_cookie = None
     if "cookies" in request.files:
         f = request.files["cookies"]
         tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".txt")
@@ -398,18 +582,33 @@ def info_route():
     try_browser = str(get_request_param("try_browser_cookies", "0")).lower() in ("1", "true", "yes")
 
     try:
+        # If no uploaded cookiefile, try to create one from env for this request
+        if not cookiefile_path:
+            env_path = make_cookiefile_from_env()
+            if env_path:
+                cookiefile_path = env_path
+                created_env_cookie = env_path
+
         result = yt_extract_info(url, cookiefile=cookiefile_path, try_browser_cookies=try_browser)
     except Exception as e:
         tb = traceback.format_exc()
         app.logger.exception("Exception in info_route")
-        if cookiefile_path:
+        if cookiefile_path and created_env_cookie:
             try: os.unlink(cookiefile_path)
             except: pass
         return jsonify({"ok": False, "error": "internal_error", "detail": str(e), "trace": tb}), 500
 
-    if cookiefile_path:
-        try: os.unlink(cookiefile_path)
-        except: pass
+    # cleanup any cookiefile created by uploaded file or env
+    if cookiefile_path and created_env_cookie:
+        try:
+            os.unlink(cookiefile_path)
+        except Exception:
+            pass
+    elif cookiefile_path and "cookies" in request.files:
+        try:
+            os.unlink(cookiefile_path)
+        except Exception:
+            pass
 
     if "info" in result:
         info = result["info"]
@@ -436,6 +635,7 @@ def download_route():
 
     requested = get_request_param("requested")
     cookiefile_path = None
+    created_env_cookie = None
     if "cookies" in request.files:
         f = request.files["cookies"]
         tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".txt")
@@ -445,10 +645,17 @@ def download_route():
     try_browser = str(get_request_param("try_browser_cookies", "0")).lower() in ("1", "true", "yes")
 
     try:
+        # If no uploaded cookiefile, try to create one from env for this request
+        if not cookiefile_path:
+            env_path = make_cookiefile_from_env()
+            if env_path:
+                cookiefile_path = env_path
+                created_env_cookie = env_path
+
         info_result = yt_extract_info(url, cookiefile=cookiefile_path, try_browser_cookies=try_browser)
     except Exception as e:
         app.logger.exception("Failed to prefetch info for download")
-        if cookiefile_path:
+        if cookiefile_path and created_env_cookie:
             try: os.unlink(cookiefile_path)
             except: pass
         return jsonify({"ok": False, "error": "prefetch_failed", "detail": str(e)}), 500
@@ -567,6 +774,7 @@ def download_route():
                 if ok:
                     try:
                         add_task_message(tid, "Trying with local browser cookies")
+                        # prefer browser cookiefile for this attempt
                         attempt_download(None, audio_conv)
                         try: os.unlink(tmp.name)
                         except: pass
@@ -602,9 +810,13 @@ def download_route():
             TASKS[tid].update({"status": "error", "error": str(e)})
             add_task_message(tid, f"Worker exception: {str(e)}")
         finally:
+            # cleanup cookiefile if it was created from env (we marked created_env_cookie earlier)
             if cookiefile:
-                try: os.unlink(cookiefile)
-                except: pass
+                try:
+                    if str(cookiefile).startswith(tempfile.gettempdir()):
+                        os.unlink(cookiefile)
+                except Exception:
+                    pass
 
     th = threading.Thread(target=worker, args=(task_id, url, cookiefile_path, try_browser, fmt_to_use, audio_convert, info), daemon=True)
     th.start()
@@ -700,6 +912,7 @@ def is_port_free(port, host="0.0.0.0"):
             return True
         except OSError:
             return False
+
 
 def pick_port(preferred=None, fallback_range=range(5001, 5011)):
     if preferred:
