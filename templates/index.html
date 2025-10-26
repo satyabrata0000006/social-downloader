@@ -1,92 +1,74 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>🎬 Social Media Downloader</title>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Social Media Downloader</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <style>
-    /* ছোট ঘূর্ণায়মান লোডার */
-    .spinner {
-      border: 3px solid #f3f3f3;
-      border-top: 3px solid #2563eb;
-      border-radius: 50%;
-      width: 16px;
-      height: 16px;
-      animation: spin 0.8s linear infinite;
-      display: inline-block;
-      vertical-align: middle;
-      margin-right: 6px;
-    }
-    @keyframes spin {
-      0% { transform: rotate(0deg); }
-      100% { transform: rotate(360deg); }
-    }
+    .spinner { border:3px solid #f3f3f3; border-top:3px solid #2563eb; border-radius:50%; width:16px; height:16px; animation:spin .8s linear infinite; display:inline-block; vertical-align:middle; margin-right:6px;}
+    @keyframes spin {0%{transform:rotate(0)}100%{transform:rotate(360deg)}}
+    .log { max-height: 180px; overflow:auto; background:#0f172a; color:#e6eef8; padding:8px; border-radius:6px; font-family: monospace; font-size:12px;}
+    .hint-banner { background: linear-gradient(90deg,#fff7ed,#ffedd5); border-left:4px solid #f59e0b; padding:10px; border-radius:8px; color:#92400e; margin-bottom:10px;}
   </style>
 </head>
+<body class="bg-gray-100 min-h-screen flex items-center justify-center p-6">
+  <div class="w-full max-w-2xl bg-white rounded-xl shadow p-6">
+    <h1 class="text-2xl font-semibold mb-3">🎬 Social Media Downloader</h1>
 
-<body class="bg-gradient-to-br from-gray-100 to-gray-200 dark:from-gray-900 dark:to-gray-800 
-             text-gray-800 dark:text-gray-100 min-h-screen flex flex-col items-center p-4">
-
-  <div class="w-full max-w-xl bg-white dark:bg-gray-900 shadow-lg rounded-2xl p-6">
-    <h1 class="text-2xl font-bold text-center mb-4">🎬 Social Media Downloader</h1>
-
-    <input id="urlInput" 
-           class="w-full border rounded-lg p-2 mb-3 
-                  text-gray-800 dark:text-gray-100 
-                  bg-white dark:bg-gray-800 
-                  placeholder-gray-400"
-           placeholder="Paste video/photo URL (YouTube, Instagram, FB, Threads...)" />
+    <input id="urlInput" class="w-full border rounded p-2 mb-3" placeholder="Paste video URL (YouTube, Instagram, Facebook...)" />
 
     <div class="flex gap-2 mb-3">
-      <button id="getInfoBtn" 
-              class="flex-1 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg transition flex justify-center items-center gap-2">
-        Get Info
-      </button>
-      <button id="autoCookieBtn" 
-              class="bg-gray-200 dark:bg-gray-700 hover:bg-gray-600 dark:hover:bg-gray-600 text-sm px-3 py-2 rounded-lg transition">
-        Auto Cookies
-      </button>
+      <button id="getInfoBtn" class="flex-1 bg-blue-600 text-white py-2 rounded">Get Info</button>
+      <button id="autoCookieBtn" class="px-3 bg-gray-200 rounded">Auto Cookies</button>
     </div>
 
-    <div id="infoSection" class="hidden">
-      <img id="thumb" class="w-full rounded-lg mb-3 shadow-sm" />
-      <h2 id="videoTitle" class="text-lg font-semibold mb-2"></h2>
+    <div class="mb-3">
+      <label class="block text-sm font-medium">Cookies (optional)</label>
+      <input id="cookiesFile" type="file" accept=".txt" class="mt-1" />
+      <label class="inline-flex items-center ml-1 mt-2">
+        <input id="useBrowserCookies" type="checkbox" class="mr-2" /> Try local browser cookies
+      </label>
+    </div>
 
-      <label class="block text-sm mb-1 font-medium">Select Format:</label>
-      <select id="formatSelect" 
-              class="w-full border p-2 rounded-lg mb-4
-                     bg-white text-gray-800 
-                     dark:bg-gray-800 dark:text-gray-100 
-                     focus:outline-none focus:ring-2 focus:ring-blue-500">
+    <div id="hintArea" class="hidden hint-banner">
+      <div id="hintText">Background task running — merging audio & video. This may take time. Please wait.</div>
+    </div>
+
+    <div id="infoSection" class="hidden border rounded p-3 bg-gray-50 mb-3">
+      <img id="thumb" class="w-full rounded mb-2 object-contain max-h-48" />
+      <h2 id="videoTitle" class="font-semibold text-lg"></h2>
+      <div id="metaRow" class="text-sm text-gray-600 mb-3"></div>
+
+      <label class="block text-sm font-medium">Video formats (containers)</label>
+      <select id="formatSelect" class="w-full border rounded p-2 mb-3"></select>
+
+      <label class="block text-sm font-medium">Audio outputs (optional)</label>
+      <select id="audioSelect" class="w-full border rounded p-2 mb-3">
+        <option value="">(No audio-only conversion)</option>
+        <option value="audio:mp3">MP3</option>
+        <option value="audio:m4a">M4A</option>
+        <option value="audio:flac">FLAC</option>
+        <option value="audio:opus">Opus</option>
       </select>
 
-      <button id="downloadBtn" 
-              class="w-full bg-green-600 hover:bg-green-700 text-white py-2 rounded-lg transition flex justify-center items-center gap-2">
-        Download
-      </button>
-
-      <button id="clearBtn" 
-              class="w-full bg-gray-300 hover:bg-gray-400 dark:bg-gray-700 dark:hover:bg-gray-600 
-                     text-gray-900 dark:text-gray-100 py-2 rounded-lg mt-2 transition">
-        Clear
-      </button>
-    </div>
-
-    <div id="progressBar" 
-         class="w-full bg-gray-300 dark:bg-gray-700 rounded-full h-4 mt-4 hidden overflow-hidden">
-      <div id="progressInner" 
-           class="bg-blue-600 h-4 rounded-full transition-all duration-300" 
-           style="width: 0%">
+      <div class="flex gap-2">
+        <button id="downloadBtn" class="flex-1 bg-green-600 text-white py-2 rounded">Download</button>
+        <button id="clearBtn" class="bg-gray-300 px-3 rounded">Clear</button>
       </div>
     </div>
 
-    <div id="statusText" class="text-center mt-2 text-sm"></div>
-  </div>
+    <div id="progressBar" class="hidden mt-3 bg-gray-200 rounded-full h-4 overflow-hidden">
+      <div id="progressInner" class="h-4 bg-blue-600 w-0"></div>
+    </div>
 
-  <footer class="text-xs text-gray-500 dark:text-gray-400 mt-6">
-    Built with ❤️ by Satyabrata | Multi-Site Support | Flask + yt-dlp
-  </footer>
+    <div id="statusText" class="mt-2 text-sm text-gray-600"></div>
+
+    <div class="mt-4">
+      <label class="block mb-1 text-sm font-medium">Live log</label>
+      <div id="liveLog" class="log"></div>
+    </div>
+  </div>
 
   <script src="/static/script.js"></script>
 </body>
